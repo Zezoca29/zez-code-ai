@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { getFunctionFromUser } from './ui/functionPicker';
 import { generateMocks } from './analyzer/mockGenerator';
 import { EnhancedScenarioGenerator } from './analyzer/scenarioGenerator';
+import { parseJavaFunction } from './analyzer/javaParser'; // Import estático
 
 export function activate(context: vscode.ExtensionContext) {
   let disposable = vscode.commands.registerCommand('extension.analyzeJavaFunction', async () => {
@@ -21,7 +22,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     try {
-      const { parseJavaFunction } = await import('./analyzer/javaParser.js');
+      // Usar o import direto sem await
       const parsedFunction = await parseJavaFunction(code, name);
       
       // Gera mocks baseados nas funções chamadas
