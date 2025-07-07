@@ -1,0 +1,78 @@
+// .vscode/tasks.json
+// Documentação: https://go.microsoft.com/fwlink/?LinkId=733558
+{
+  "version": "2.0.0",
+  "tasks": [
+    // 🎯 Task principal que agrupa os watchers de TSC e esbuild
+    {
+      "label": "watch",
+      "dependsOn": [
+        "npm: watch:tsc",
+        "npm: watch:esbuild"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "silent"
+      },
+      "problemMatcher": []
+    },
+
+    // 👀 Watch do TypeScript
+    {
+      "type": "npm",
+      "script": "watch:tsc",
+      "label": "npm: watch:tsc",
+      "isBackground": true,
+      "problemMatcher": "$tsc-watch",
+      "group": "build",
+      "presentation": {
+        "group": "watchers",
+        "reveal": "never"
+      }
+    },
+
+    // 👀 Watch do esbuild
+    {
+      "type": "npm",
+      "script": "watch:esbuild",
+      "label": "npm: watch:esbuild",
+      "isBackground": true,
+      "problemMatcher": "$esbuild-watch",
+      "group": "build",
+      "presentation": {
+        "group": "watchers",
+        "reveal": "never"
+      }
+    },
+
+    // 🧪 Watch de testes (opcional)
+    {
+      "type": "npm",
+      "script": "watch-tests",
+      "label": "npm: watch-tests",
+      "isBackground": true,
+      "problemMatcher": "$tsc-watch",
+      "group": "test",
+      "presentation": {
+        "reveal": "never",
+        "group": "watchers"
+      }
+    },
+
+    // 🔄 Task combinada para watch geral + testes (manual)
+    {
+      "label": "tasks: watch-with-tests",
+      "dependsOn": [
+        "npm: watch",
+        "npm: watch-tests"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent"
+      }
+    }
+  ]
+}

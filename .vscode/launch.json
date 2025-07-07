@@ -1,0 +1,30 @@
+{
+  // Configuração de lançamento para desenvolvimento de extensões VS Code
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Executar Plugin VS Code",
+      "type": "extensionHost",
+      "request": "launch",
+
+      // Caminho da extensão em desenvolvimento
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}"
+      ],
+
+      // Caminho dos arquivos JS compilados (ajuste para dist/, out/, ou build/)
+      "outFiles": [
+        "${workspaceFolder}/out/**/*.js"
+      ],
+
+      // Executa automaticamente a task de build (watch) antes de iniciar
+      "preLaunchTask": "npm: watch",
+
+      // Garante que erros de TS bloqueiem a execução
+      "problemMatcher": ["$tsc-watch"],
+
+      // Redireciona saída do console da extensão para o Debug Console
+      "internalConsoleOptions": "openOnSessionStart"
+    }
+  ]
+}
