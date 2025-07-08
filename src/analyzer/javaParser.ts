@@ -1,4 +1,24 @@
 // Versão melhorada do parser Java
+export interface ClassInfo {
+  name: string;
+  fullName: string; // com package
+  startLine: number;
+  endLine: number;
+  body: string;
+  isInterface: boolean;
+  isAbstract: boolean;
+  superClass?: string;
+  interfaces: string[];
+}
+
+export interface MethodSearchResult {
+  found: boolean;
+  method?: ParsedFunction;
+  className?: string;
+  suggestions?: string[];
+  error?: string;
+}
+
 export interface Parameter {
   name: string;
   type: string;
