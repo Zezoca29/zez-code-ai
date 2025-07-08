@@ -85,14 +85,14 @@ class EnhancedScenarioGenerator {
             }
         });
         // Cenários com exceções de métodos chamados
-        func.calledFunctions.forEach(methodCall => {
+        func.calledFunctions.forEach(calledFunction => {
             scenarios.push({
-                name: `test${func.name}When${methodCall.methodName}ThrowsException`,
-                description: `Testa ${func.name} quando ${methodCall.methodName} lança exceção`,
+                name: `test${func.name}When${calledFunction.methodName}ThrowsException`,
+                description: `Testa ${func.name} quando ${calledFunction.methodName} lança exceção`,
                 inputs: this.generateBasicInputs(func.parameters),
                 expectedBehavior: 'Should handle exception appropriately',
-                mockSetup: this.generateExceptionMockSetup(methodCall),
-                assertions: this.generateExceptionAssertions(func, methodCall),
+                mockSetup: this.generateExceptionMockSetup(calledFunction),
+                assertions: this.generateExceptionAssertions(func, calledFunction),
                 category: 'error-case'
             });
         });
@@ -237,9 +237,9 @@ class EnhancedScenarioGenerator {
     generateMockSetup(calledFunctions) {
         return calledFunctions.map(func => `when(${func.className || 'mockObject'}.${func.methodName}(${func.parameters.map(() => 'any()').join(', ')})).thenReturn(${this.getDefaultReturnValue(func.returnType || 'Object')});`);
     }
-    generateExceptionMockSetup(methodCall) {
+    generateExceptionMockSetup(calledFunction) {
         return [
-            `when(${methodCall.className || 'mockObject'}.${methodCall.methodName}(${methodCall.parameters.map(() => 'any()').join(', ')})).thenThrow(new RuntimeException("Test exception"));`
+            `when(${calledFunction.className || 'mockObject'}.${calledFunction.methodName}(${calledFunction.parameters.map(() => 'any()').join(', ')})).thenThrow(new RuntimeException("Test exception"));`
         ];
     }
     generateBasicAssertions(func) {
@@ -254,8 +254,8 @@ class EnhancedScenarioGenerator {
             }
         }
         // Verifica se métodos foram chamados
-        func.calledFunctions.forEach(methodCall => {
-            assertions.push(`verify(${methodCall.className || 'mockObject'}).${methodCall.methodName}(${methodCall.parameters.map(() => 'any()').join(', ')});`);
+        func.calledFunctions.forEach(calledFunction => {
+            assertions.push(`verify(${calledFunction.className || 'mockObject'}).${calledFunction.methodName}(${calledFunction.parameters.map(() => 'any()').join(', ')});`);
         });
         return assertions;
     }
@@ -273,7 +273,7 @@ class EnhancedScenarioGenerator {
         }
         return this.generateBasicAssertions(func);
     }
-    generateExceptionAssertions(func, methodCall) {
+    generateExceptionAssertions(func, calledFunction) {
         return [
             `assertThrows(RuntimeException.class, () -> ${func.name}(${func.parameters.map(p => this.getDefaultValueForType(p.type)).join(', ')}));`
         ];
