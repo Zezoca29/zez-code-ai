@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { getFunctionFromUser } from './ui/functionPicker';
 import { generateMocks } from './analyzer/mockGenerator';
 import { EnhancedScenarioGenerator } from './analyzer/scenarioGenerator';
-import { parseJavaFunction } from './analyzer/javaParser'; // Import estático
+import { parseJavaFunctionInClass } from './analyzer/javaParserClass'; // Parser com busca em classe
 
 export function activate(context: vscode.ExtensionContext) {
   let disposable = vscode.commands.registerCommand('extension.analyzeJavaFunction', async () => {
@@ -14,17 +14,41 @@ export function activate(context: vscode.ExtensionContext) {
 
     const document = editor.document;
     const code = document.getText();
-    const { name, level } = await getFunctionFromUser();
+    const { name, level, className } = await getFunctionFromUser();
 
     if (!name) {
       vscode.window.showWarningMessage('Nome da função não informado.');
       return;
     }
 
+    // NOVA VALIDAÇÃO: Tornar className obrigatório
+    if (!className || className.trim() === '') {
+      vscode.window.showWarningMessage('Nome da classe é obrigatório.');
+      return;
+    }
+
     try {
-      // Usar o import direto sem await
-      const parsedFunction = await parseJavaFunction(code, name);
+      let parsedFunction;
+      let searchResult;
+
+      // Sempre usar o parser com busca em classe (agora obrigatório)
+      searchResult = await parseJavaFunctionInClass(code, className.trim(), name);
       
+      if (!searchResult.found) {
+        // Mostrar erro com sugestões
+        let errorMessage = searchResult.error || 'Método não encontrado';
+        
+        if (searchResult.suggestions && searchResult.suggestions.length > 0) {
+          errorMessage += `\n\nSugestões disponíveis: ${searchResult.suggestions.join(', ')}`;
+        }
+        
+        vscode.window.showErrorMessage(errorMessage);
+        return;
+      }
+      
+      parsedFunction = searchResult.method!;
+      
+      // Resto do código permanece igual...
       // Gera mocks baseados nas funções chamadas
       const mockFunctions = parsedFunction.calledFunctions.map(func => func.methodName);
       const mocks = generateMocks(mockFunctions);
@@ -38,8 +62,16 @@ export function activate(context: vscode.ExtensionContext) {
       const output = vscode.window.createOutputChannel('Java Function Analyzer');
       output.clear();
       output.appendLine('='.repeat(60));
-      output.appendLine(`ANÁLISE DA FUNÇÃO: ${name}`);
+      
+      // Título sempre com classe e método
+      output.appendLine(`ANÁLISE DO MÉTODO: ${searchResult.className}.${name}`);
       output.appendLine('='.repeat(60));
+      
+      // Informações sobre a busca (sempre presente agora)
+      output.appendLine('\n🔍 INFORMAÇÕES DA BUSCA:');
+      output.appendLine(`   Classe: ${searchResult.className}`);
+      output.appendLine(`   Método: ${name}`);
+      output.appendLine(`   Status: Encontrado com sucesso`);
       
       // Informações básicas da função
       output.appendLine('\n📋 INFORMAÇÕES BÁSICAS:');
@@ -183,10 +215,12 @@ export function activate(context: vscode.ExtensionContext) {
       
       output.show();
       
-      // Mostra mensagem de sucesso
-      vscode.window.showInformationMessage(
-        `Análise concluída! ${filteredScenarios.length} cenários gerados (nível ${level}).`
-      );
+      // Mensagem de sucesso personalizada
+      const successMessage = searchResult 
+        ? `Análise concluída! Método ${searchResult.className}.${name} encontrado. ${filteredScenarios.length} cenários gerados (nível ${level}).`
+        : `Análise concluída! ${filteredScenarios.length} cenários gerados (nível ${level}).`;
+      
+      vscode.window.showInformationMessage(successMessage);
       
     } catch (err) {
       const error = err as Error;

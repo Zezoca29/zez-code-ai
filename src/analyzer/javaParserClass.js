@@ -46,7 +46,7 @@ async function parseJavaFunctionInClass(code, className, methodName) {
         console.error('Erro na busca melhorada:', error);
         return {
             found: false,
-            error: `Erro no parsing: ${error.message}`
+            error: `Erro no parsing: ${error}`
         };
     }
 }
