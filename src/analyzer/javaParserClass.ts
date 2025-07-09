@@ -2,6 +2,25 @@
 
 import { CalledFunction, LocalVariable, Parameter, ParsedFunction } from "./javaParser";
 
+// Cache para melhorar performance e consistência
+const classCache = new Map<string, ClassInfo[]>();
+const methodCache = new Map<string, FunctionInfo[]>();
+
+// Função para limpar cache quando necessário
+export function clearParserCache(): void {
+  classCache.clear();
+  methodCache.clear();
+  console.log('Cache do parser limpo');
+}
+
+// Função para obter estatísticas do cache
+export function getCacheStats(): { classCacheSize: number; methodCacheSize: number } {
+  return {
+    classCacheSize: classCache.size,
+    methodCacheSize: methodCache.size
+  };
+}
+
 export interface ClassInfo {
   name: string;
   fullName: string; // com package
@@ -29,60 +48,104 @@ export async function parseJavaFunctionInClass(
 ): Promise<MethodSearchResult> {
   console.log(`=== BUSCA MELHORADA: ${className}.${methodName} ===`);
   
-  try {
-    // 1. Limpar código e normalizar
-    const cleanedCode = cleanJavaCode(code);
-    const normalizedClassName = normalizeIdentifier(className);
-    const normalizedMethodName = normalizeIdentifier(methodName);
-    
-    // 2. Encontrar todas as classes no código
-    const classes = findAllClasses(cleanedCode);
-    console.log(`Classes encontradas: ${classes.map(c => c.name).join(', ')}`);
-    
-    // 3. Buscar a classe específica
-    const targetClass = findTargetClass(classes, normalizedClassName);
-    
-    if (!targetClass) {
-      return {
-        found: false,
-        error: `Classe "${className}" não encontrada`,
-        suggestions: classes.map(c => c.name)
-      };
-    }
-    
-    console.log(`Classe encontrada: ${targetClass.name}`);
-    
-    // 4. Buscar o método dentro da classe
-    const methodResult = findMethodInClass(targetClass, normalizedMethodName);
-    
-    if (!methodResult.found) {
-      // 5. Buscar métodos similares para sugestões
-      const similarMethods = findSimilarMethods(targetClass, normalizedMethodName);
+  // Implementar retry com backoff exponencial
+  const maxRetries = 3;
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Tentativa ${attempt}/${maxRetries}`);
+      
+      // 1. Limpar código e normalizar
+      const cleanedCode = cleanJavaCode(code);
+      const normalizedClassName = normalizeIdentifier(className);
+      const normalizedMethodName = normalizeIdentifier(methodName);
+      
+      // 2. Gerar hash do código para cache
+      const codeHash = generateCodeHash(cleanedCode);
+      
+      // 3. Tentar buscar do cache primeiro
+      let classes = classCache.get(codeHash);
+      if (!classes) {
+        classes = findAllClassesOptimized(cleanedCode);
+        classCache.set(codeHash, classes);
+      }
+      
+      console.log(`Classes encontradas: ${classes.map(c => c.name).join(', ')}`);
+      
+      // 4. Buscar a classe específica com retry logic
+      const targetClass = await findTargetClassWithRetry(classes, normalizedClassName);
+      
+      if (!targetClass) {
+        return {
+          found: false,
+          error: `Classe "${className}" não encontrada`,
+          suggestions: classes.map(c => c.name)
+        };
+      }
+      
+      console.log(`Classe encontrada: ${targetClass.name}`);
+      
+      // 5. Buscar o método dentro da classe com cache
+      const methodResult = await findMethodInClassWithCache(targetClass, normalizedMethodName, codeHash);
+      
+      if (!methodResult.found) {
+        // 6. Buscar métodos similares para sugestões
+        const similarMethods = findSimilarMethods(targetClass, normalizedMethodName);
+        
+        return {
+          found: false,
+          className: targetClass.name,
+          error: `Método "${methodName}" não encontrado na classe "${className}"`,
+          suggestions: similarMethods
+        };
+      }
+      
+      // 7. Fazer parse completo do método encontrado
+      const parsedMethod = await parseMethodDetails(methodResult.method!, targetClass, cleanedCode);
       
       return {
-        found: false,
-        className: targetClass.name,
-        error: `Método "${methodName}" não encontrado na classe "${className}"`,
-        suggestions: similarMethods
+        found: true,
+        method: parsedMethod,
+        className: targetClass.name
       };
+      
+    } catch (error) {
+      lastError = error as Error;
+      console.error(`Erro na tentativa ${attempt}:`, error);
+      
+      if (attempt < maxRetries) {
+        // Aguardar antes da próxima tentativa (backoff exponencial)
+        const delay = Math.pow(2, attempt) * 100; // 200ms, 400ms, 800ms
+        console.log(`Aguardando ${delay}ms antes da próxima tentativa...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        // Limpar cache em caso de erro para forçar reprocessamento
+        if (attempt === 2) {
+          console.log('Limpando cache devido a erro persistente...');
+          clearParserCache();
+        }
+      }
     }
-    
-    // 6. Fazer parse completo do método encontrado
-    const parsedMethod = await parseMethodDetails(methodResult.method!, targetClass, cleanedCode);
-    
-    return {
-      found: true,
-      method: parsedMethod,
-      className: targetClass.name
-    };
-    
-  } catch (error) {
-    console.error('Erro na busca melhorada:', error);
-    return {
-      found: false,
-      error: `Erro no parsing: ${error}`
-    };
   }
+  
+  // Se chegou aqui, todas as tentativas falharam
+  console.error('Todas as tentativas falharam:', lastError);
+  return {
+    found: false,
+    error: `Erro no parsing após ${maxRetries} tentativas: ${lastError?.message || 'Erro desconhecido'}`
+  };
+}
+
+function generateCodeHash(code: string): string {
+  // Hash simples para identificar mudanças no código
+  let hash = 0;
+  for (let i = 0; i < code.length; i++) {
+    const char = code.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return hash.toString();
 }
 
 function normalizeIdentifier(name: string): string {
@@ -90,29 +153,36 @@ function normalizeIdentifier(name: string): string {
   return name.trim().replace(/\s+/g, '');
 }
 
-function findAllClasses(code: string): ClassInfo[] {
+function findAllClassesOptimized(code: string): ClassInfo[] {
   const classes: ClassInfo[] = [];
   
-  // Padrões para encontrar classes (incluindo interfaces)
+  // Padrões otimizados para encontrar classes (incluindo interfaces)
   const classPatterns = [
     // Classe normal: public class MyClass extends SuperClass implements Interface
-    /(?:^|\n)\s*((?:public|private|protected|static|final|abstract)\s+)*\s*(class|interface)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:extends\s+([a-zA-Z_$][a-zA-Z0-9_$.<>]*))?\s*(?:implements\s+([a-zA-Z_$][a-zA-Z0-9_$.<>, ]*))?\s*\{/g,
+    /(?:^|\n)\s*((?:public|private|protected|static|final|abstract)\s+)*\s*(class|interface)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:extends\s+([a-zA-Z_$][a-zA-Z0-9_$.<>]*))?\s*(?:implements\s+([a-zA-Z_$][a-zA-Z0-9_$.<>, ]*))?\s*\{/gm,
     
     // Classe anônima ou interna
-    /(?:^|\n)\s*((?:public|private|protected|static|final|abstract)\s+)*\s*class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\{/g
+    /(?:^|\n)\s*((?:public|private|protected|static|final|abstract)\s+)*\s*class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\{/gm,
+    
+    // Classe sem modificadores explícitos
+    /(?:^|\n)\s*(class|interface)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\{/gm
   ];
   
   for (const pattern of classPatterns) {
     let match;
+    // Reset do regex para evitar problemas de estado
+    pattern.lastIndex = 0;
+    
     while ((match = pattern.exec(code)) !== null) {
       const modifiers = match[1] || '';
       const classType = match[2] || 'class';
-      const className = match[3] || match[2]; // Para o segundo padrão
+      // Para o terceiro padrão (sem modificadores), match[2] é o tipo e match[3] é o nome
+      const className = match[3] || match[2]; 
       const superClass = match[4];
       const interfaces = match[5] ? match[5].split(',').map(i => i.trim()) : [];
       
       const startIndex = match.index!;
-      const classBody = extractClassBody(code, startIndex + match[0].length - 1);
+      const classBody = extractClassBodyOptimized(code, startIndex + match[0].length - 1);
       
       if (classBody) {
         classes.push({
@@ -133,27 +203,35 @@ function findAllClasses(code: string): ClassInfo[] {
   return classes;
 }
 
-function extractClassBody(code: string, startIndex: number): string {
+function extractClassBodyOptimized(code: string, startIndex: number): string {
   let braceCount = 0;
   let bodyStart = -1;
   let bodyEnd = -1;
   let inString = false;
   let stringChar = '';
   let inComment = false;
+  let inLineComment = false;
   
   for (let i = startIndex; i < code.length; i++) {
     const char = code[i];
     const nextChar = i + 1 < code.length ? code[i + 1] : '';
     const prevChar = i > 0 ? code[i - 1] : '';
     
-    // Ignorar comentários
-    if (char === '/' && nextChar === '/' && !inString) {
-      // Pular até o final da linha
-      while (i < code.length && code[i] !== '\n') i++;
+    // Ignorar comentários de linha
+    if (char === '/' && nextChar === '/' && !inString && !inComment) {
+      inLineComment = true;
       continue;
     }
     
-    if (char === '/' && nextChar === '*' && !inString) {
+    if (char === '\n' && inLineComment) {
+      inLineComment = false;
+      continue;
+    }
+    
+    if (inLineComment) continue;
+    
+    // Ignorar comentários de bloco
+    if (char === '/' && nextChar === '*' && !inString && !inComment) {
       inComment = true;
       i++; // pular o *
       continue;
@@ -210,28 +288,41 @@ function extractFullClassName(code: string, className: string): string {
   return className;
 }
 
-function findTargetClass(classes: ClassInfo[], normalizedClassName: string): ClassInfo | null {
-  // Busca exata primeiro
+async function findTargetClassWithRetry(classes: ClassInfo[], normalizedClassName: string): Promise<ClassInfo | null> {
+  // Primeira tentativa: busca exata
   let found = classes.find(c => normalizeIdentifier(c.name) === normalizedClassName);
   if (found) return found;
   
-  // Busca por nome simples (ignorando package)
+  // Segunda tentativa: busca por nome simples (ignorando package)
   found = classes.find(c => {
     const simpleName = c.name.split('.').pop() || c.name;
     return normalizeIdentifier(simpleName) === normalizedClassName;
   });
   if (found) return found;
   
-  // Busca case-insensitive
+  // Terceira tentativa: busca case-insensitive
   found = classes.find(c => 
     normalizeIdentifier(c.name).toLowerCase() === normalizedClassName.toLowerCase()
   );
   if (found) return found;
   
-  // Busca por similaridade (contém)
-  return classes.find(c => 
+  // Quarta tentativa: busca por similaridade (contém)
+  found = classes.find(c => 
     normalizeIdentifier(c.name).toLowerCase().includes(normalizedClassName.toLowerCase())
-  ) || null;
+  );
+  if (found) return found;
+  
+  // Quinta tentativa: aguardar um pouco e tentar novamente (para casos de timing)
+  await new Promise(resolve => setTimeout(resolve, 50));
+  
+  // Retry com busca mais agressiva
+  found = classes.find(c => {
+    const normalizedName = normalizeIdentifier(c.name).toLowerCase();
+    const searchName = normalizedClassName.toLowerCase();
+    return normalizedName.includes(searchName) || searchName.includes(normalizedName);
+  });
+  
+  return found || null;
 }
 
 interface MethodSearchInClassResult {
@@ -240,10 +331,18 @@ interface MethodSearchInClassResult {
   allMethods?: string[];
 }
 
-function findMethodInClass(classInfo: ClassInfo, normalizedMethodName: string): MethodSearchInClassResult {
+async function findMethodInClassWithCache(classInfo: ClassInfo, normalizedMethodName: string, codeHash: string): Promise<MethodSearchInClassResult> {
   console.log(`Buscando método "${normalizedMethodName}" na classe "${classInfo.name}"`);
   
-  const methods = extractAllMethodsFromClass(classInfo.body);
+  // Tentar buscar do cache
+  const cacheKey = `${codeHash}_${classInfo.name}`;
+  let methods = methodCache.get(cacheKey);
+  
+  if (!methods) {
+    methods = extractAllMethodsFromClassOptimized(classInfo.body);
+    methodCache.set(cacheKey, methods);
+  }
+  
   console.log(`Métodos encontrados na classe: ${methods.map(m => m.name).join(', ')}`);
   
   // Busca exata
@@ -260,6 +359,19 @@ function findMethodInClass(classInfo: ClassInfo, normalizedMethodName: string): 
     return { found: true, method: found, allMethods: methods.map(m => m.name) };
   }
   
+  // Retry com busca mais agressiva
+  await new Promise(resolve => setTimeout(resolve, 30));
+  
+  found = methods.find(m => {
+    const normalizedName = normalizeIdentifier(m.name).toLowerCase();
+    const searchName = normalizedMethodName.toLowerCase();
+    return normalizedName.includes(searchName) || searchName.includes(normalizedName);
+  });
+  
+  if (found) {
+    return { found: true, method: found, allMethods: methods.map(m => m.name) };
+  }
+  
   return { found: false, allMethods: methods.map(m => m.name) };
 }
 
@@ -271,29 +383,32 @@ interface FunctionInfo {
   endLine: number;
 }
 
-function extractAllMethodsFromClass(classBody: string): FunctionInfo[] {
+function extractAllMethodsFromClassOptimized(classBody: string): FunctionInfo[] {
   const methods: FunctionInfo[] = [];
   
-  // Padrões mais abrangentes para métodos
+  // Padrões otimizados para métodos
   const methodPatterns = [
     // Método completo com modificadores
-    /((?:public|private|protected|static|final|abstract|synchronized|native|strictfp)\s+)*([a-zA-Z_$][a-zA-Z0-9_$<>\[\]]*(?:\s*\[\s*\])*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]*)?\s*\{/g,
+    /((?:public|private|protected|static|final|abstract|synchronized|native|strictfp)\s+)*([a-zA-Z_$][a-zA-Z0-9_$<>\[\]]*(?:\s*\[\s*\])*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]*)?\s*\{/gm,
     
     // Construtor
-    /((?:public|private|protected)\s+)?([A-Z][a-zA-Z0-9_$]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]*)?\s*\{/g,
+    /((?:public|private|protected)\s+)?([A-Z][a-zA-Z0-9_$]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]*)?\s*\{/gm,
     
     // Método sem modificadores explícitos
-    /([a-zA-Z_$][a-zA-Z0-9_$<>\[\]]*(?:\s*\[\s*\])*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(([^)]*)\)\s*\{/g
+    /([a-zA-Z_$][a-zA-Z0-9_$<>\[\]]*(?:\s*\[\s*\])*)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(([^)]*)\)\s*\{/gm
   ];
   
   for (const pattern of methodPatterns) {
     let match;
+    // Reset do regex para evitar problemas de estado
+    pattern.lastIndex = 0;
+    
     while ((match = pattern.exec(classBody)) !== null) {
       const methodName = match[3] || match[2]; // Para construtores
       const signature = match[0];
       const startIndex = match.index!;
       
-      const methodBody = extractMethodBody(classBody, startIndex + signature.length - 1);
+      const methodBody = extractMethodBodyOptimized(classBody, startIndex + signature.length - 1);
       
       if (methodBody && methodName) {
         methods.push({
@@ -315,16 +430,47 @@ function extractAllMethodsFromClass(classBody: string): FunctionInfo[] {
   return uniqueMethods;
 }
 
-function extractMethodBody(code: string, startIndex: number): string {
+function extractMethodBodyOptimized(code: string, startIndex: number): string {
   let braceCount = 0;
   let bodyStart = -1;
   let bodyEnd = -1;
   let inString = false;
   let stringChar = '';
+  let inComment = false;
+  let inLineComment = false;
   
   for (let i = startIndex; i < code.length; i++) {
     const char = code[i];
+    const nextChar = i + 1 < code.length ? code[i + 1] : '';
     const prevChar = i > 0 ? code[i - 1] : '';
+    
+    // Ignorar comentários de linha
+    if (char === '/' && nextChar === '/' && !inString && !inComment) {
+      inLineComment = true;
+      continue;
+    }
+    
+    if (char === '\n' && inLineComment) {
+      inLineComment = false;
+      continue;
+    }
+    
+    if (inLineComment) continue;
+    
+    // Ignorar comentários de bloco
+    if (char === '/' && nextChar === '*' && !inString && !inComment) {
+      inComment = true;
+      i++; // pular o *
+      continue;
+    }
+    
+    if (char === '*' && nextChar === '/' && inComment) {
+      inComment = false;
+      i++; // pular o /
+      continue;
+    }
+    
+    if (inComment) continue;
     
     // Controle de strings
     if ((char === '"' || char === "'") && prevChar !== '\\') {
@@ -361,7 +507,7 @@ function extractMethodBody(code: string, startIndex: number): string {
 }
 
 function findSimilarMethods(classInfo: ClassInfo, methodName: string): string[] {
-  const methods = extractAllMethodsFromClass(classInfo.body);
+  const methods = extractAllMethodsFromClassOptimized(classInfo.body);
   const normalized = methodName.toLowerCase();
   
   return methods
@@ -720,7 +866,7 @@ export async function analyzeDecisionBranches(
   console.log(`=== ANÁLISE DE RAMOS DE DECISÃO: ${className}.${methodName} ===`);
   
   try {
-    // Primeiro, obter o método usando o parser existente
+    // Primeiro, obter o método usando o parser otimizado
     const methodResult = await parseJavaFunctionInClass(code, className, methodName);
     
     if (!methodResult.found || !methodResult.method) {
@@ -728,7 +874,13 @@ export async function analyzeDecisionBranches(
     }
     
     const method = methodResult.method;
-    const methodBody = extractMethodBodyFromCode(code, className, methodName);
+    // Usar o corpo do método já extraído pelo parser otimizado
+    let methodBody: string;
+    if (method.calledFunctions.length > 0) {
+      methodBody = await extractMethodBodyFromCodeOptimized(code, className, methodName);
+    } else {
+      methodBody = extractMethodBodyFromCode(code, className, methodName);
+    }
     
     // Analisar ramos de decisão
     const conditionals = extractConditionalStatements(methodBody);
@@ -766,7 +918,48 @@ function extractMethodBodyFromCode(code: string, className: string, methodName: 
   }
   
   const startIndex = match.index! + match[0].length - 1;
-  return extractMethodBody(code, startIndex);
+  return extractMethodBodyOptimized(code, startIndex);
+}
+
+async function extractMethodBodyFromCodeOptimized(code: string, className: string, methodName: string): Promise<string> {
+  try {
+    // Usar o parser otimizado para encontrar o método
+    const methodResult = await parseJavaFunctionInClass(code, className, methodName);
+    
+    if (!methodResult.found || !methodResult.method) {
+      throw new Error(`Método ${methodName} não encontrado na classe ${className}`);
+    }
+    
+    // Se o parser otimizado encontrou o método, extrair o corpo
+    const cleanedCode = cleanJavaCode(code);
+    const codeHash = generateCodeHash(cleanedCode);
+    
+    // Buscar a classe no cache
+    let classes = classCache.get(codeHash);
+    if (!classes) {
+      classes = findAllClassesOptimized(cleanedCode);
+      classCache.set(codeHash, classes);
+    }
+    
+    const targetClass = await findTargetClassWithRetry(classes, normalizeIdentifier(className));
+    if (!targetClass) {
+      throw new Error(`Classe ${className} não encontrada`);
+    }
+    
+    // Buscar o método na classe
+    const methodResult2 = await findMethodInClassWithCache(targetClass, normalizeIdentifier(methodName), codeHash);
+    
+    if (!methodResult2.found || !methodResult2.method) {
+      throw new Error(`Método ${methodName} não encontrado na classe ${className}`);
+    }
+    
+    return methodResult2.method.body;
+    
+  } catch (error) {
+    console.error('Erro ao extrair corpo do método otimizado:', error);
+    // Fallback para o método original
+    return extractMethodBodyFromCode(code, className, methodName);
+  }
 }
 
 function extractConditionalStatements(code: string): ConditionalStatement[] {

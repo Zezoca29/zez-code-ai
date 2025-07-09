@@ -1,8 +1,11 @@
 import * as vscode from 'vscode';
 import { getFunctionFromUser } from './ui/functionPicker';
-import { generateMocks } from './analyzer/mockGenerator';
+import { generateMocks, generateMockSetup } from './analyzer/mockGenerator';
 import { EnhancedScenarioGenerator } from './analyzer/scenarioGenerator';
-import { parseJavaFunctionInClass } from './analyzer/javaParserClass'; // Parser com busca em classe
+import { parseJavaFunctionInClass, analyzeDecisionBranches, clearParserCache, getCacheStats} from './analyzer/javaParserClass'; // Parser com busca em classe
+import { UnitTestGenerator } from './analyzer/unitTestGenerator';
+import { generateAdvancedMocks, generateCompleteMockSetup } from './analyzer/mockGenerator';
+
 
 export function activate(context: vscode.ExtensionContext) {
   let disposable = vscode.commands.registerCommand('extension.analyzeJavaFunction', async () => {
@@ -31,10 +34,15 @@ export function activate(context: vscode.ExtensionContext) {
       let parsedFunction;
       let searchResult;
 
+      // Log de debug para cache
+      const cacheStats = getCacheStats();
+      console.log(`Cache stats antes da busca: ${JSON.stringify(cacheStats)}`);
+
       // Sempre usar o parser com busca em classe (agora obrigatório)
+      console.log(`Iniciando busca para: ${className.trim()}.${name}`);
       searchResult = await parseJavaFunctionInClass(code, className.trim(), name);
       
-      if (!searchResult.found) {
+      if (!searchResult.className) {
         // Mostrar erro com sugestões
         let errorMessage = searchResult.error || 'Método não encontrado';
         
@@ -42,21 +50,41 @@ export function activate(context: vscode.ExtensionContext) {
           errorMessage += `\n\nSugestões disponíveis: ${searchResult.suggestions.join(', ')}`;
         }
         
+        console.error(`Busca falhou: ${errorMessage}`);
         vscode.window.showErrorMessage(errorMessage);
         return;
       }
       
+      console.log(`Busca bem-sucedida: ${searchResult.className}.${name}`);
       parsedFunction = searchResult.method!;
+
+      const decisionAnalysis = await analyzeDecisionBranches(code, searchResult.className, name);
+
       
-      // Gera mocks baseados nas funções chamadas
-      const mockFunctions = parsedFunction.calledFunctions.map(func => func.methodName);
-      const mocks = generateMocks(mockFunctions);
+      // Gera mocks avançados baseados nas funções chamadas com análise detalhada das classes
+      const advancedMockResult = await generateAdvancedMocks(code, parsedFunction.calledFunctions);
+      const mocks = advancedMockResult.basicMocks;
+      const mockSetup = advancedMockResult.enhancedSetup;
       
       // Gera cenários de teste baseados no nível selecionado
       const testSuite = EnhancedScenarioGenerator.generateTestSuite(parsedFunction);
       
       // Filtra cenários baseado no nível selecionado
       const filteredScenarios = filterScenariosByLevel(testSuite.scenarios, level);
+      
+      // Gera testes unitários no padrão AAA
+      const unitTestSuite = UnitTestGenerator.generateUnitTestSuite(
+        { ...testSuite, scenarios: filteredScenarios },
+        searchResult.className
+      );
+      
+      // Tenta salvar o arquivo de testes unitários
+      let testFileCreated = false;
+      try {
+        testFileCreated = await saveUnitTestFile(unitTestSuite, document.uri);
+      } catch (error) {
+        console.warn('Erro ao salvar arquivo de testes:', error);
+      }
 
       const output = vscode.window.createOutputChannel('Java Function Analyzer');
       output.clear();
@@ -138,14 +166,34 @@ export function activate(context: vscode.ExtensionContext) {
         });
       }
       
-      // Mocks sugeridos
-      output.appendLine('\n🎭 MOCKS SUGERIDOS:');
+      // Mocks sugeridos com análise de classes
+      output.appendLine('\n🎭 MOCKS AVANÇADOS COM ANÁLISE DE CLASSES:');
       if (mocks.length === 0) {
         output.appendLine('   Nenhum mock necessário');
       } else {
+        output.appendLine('   Mocks básicos:');
         mocks.forEach((mock, index) => {
           output.appendLine(`   ${index + 1}. ${mock}`);
         });
+        
+        if (mockSetup.length > 0) {
+          output.appendLine('\n   Setup avançado com análise de classes:');
+          mockSetup.forEach((setup) => {
+            output.appendLine(`   ${setup}`);
+          });
+        }
+        
+        // Informações sobre análise de classes
+        if (advancedMockResult.classAnalysis.length > 0) {
+          output.appendLine('\n   📊 ANÁLISE DETALHADA DAS CLASSES:');
+          advancedMockResult.classAnalysis.forEach((classInfo, index) => {
+            output.appendLine(`   ${index + 1}. Classe: ${classInfo.className}`);
+            output.appendLine(`      Campos: ${classInfo.fields.length}`);
+            output.appendLine(`      Construtores: ${classInfo.constructors.length}`);
+            output.appendLine(`      Métodos: ${classInfo.methods.length}`);
+            output.appendLine(`      Dependências: ${classInfo.dependencies.length}`);
+          });
+        }
       }
       
       // Configuração de teste
@@ -166,6 +214,88 @@ export function activate(context: vscode.ExtensionContext) {
           output.appendLine(`     ${dep}`);
         });
       }
+      
+      // Informações detalhadas das classes analisadas
+      if (advancedMockResult.classAnalysis.length > 0) {
+        output.appendLine('\n🏗️ INFORMAÇÕES DETALHADAS DAS CLASSES:');
+        advancedMockResult.classAnalysis.forEach((classInfo, index) => {
+          output.appendLine(`\n   📦 CLASSE ${index + 1}: ${classInfo.className}`);
+          
+          // Campos da classe
+          if (classInfo.fields.length > 0) {
+            output.appendLine(`   📋 Campos (${classInfo.fields.length}):`);
+            classInfo.fields.forEach((field, fieldIndex) => {
+              let fieldInfo = `     ${fieldIndex + 1}. ${field.visibility} ${field.type} ${field.name}`;
+              if (field.isStatic) fieldInfo += ' (static)';
+              if (field.isFinal) fieldInfo += ' (final)';
+              if (field.initialValue) fieldInfo += ` = ${field.initialValue}`;
+              if (field.annotations.length > 0) {
+                fieldInfo += ` [@${field.annotations.join(', @')}]`;
+              }
+              output.appendLine(fieldInfo);
+            });
+          }
+          
+          // Construtores da classe
+          if (classInfo.constructors.length > 0) {
+            output.appendLine(`   🔨 Construtores (${classInfo.constructors.length}):`);
+            classInfo.constructors.forEach((constructor, constIndex) => {
+              const params = constructor.parameters.map(p => `${p.type} ${p.name}`).join(', ');
+              let constInfo = `     ${constIndex + 1}. ${constructor.visibility} ${classInfo.className}(${params})`;
+              if (constructor.annotations.length > 0) {
+                constInfo += ` [@${constructor.annotations.join(', @')}]`;
+              }
+              output.appendLine(constInfo);
+            });
+          }
+          
+          // Métodos da classe
+          if (classInfo.methods.length > 0) {
+            output.appendLine(`   ⚙️ Métodos (${classInfo.methods.length}):`);
+            classInfo.methods.forEach((method, methodIndex) => {
+              const params = method.parameters.map(p => `${p.type} ${p.name}`).join(', ');
+              let methodInfo = `     ${methodIndex + 1}. ${method.visibility} ${method.returnType} ${method.name}(${params})`;
+              if (method.isStatic) methodInfo += ' (static)';
+              if (method.isAbstract) methodInfo += ' (abstract)';
+              if (method.annotations.length > 0) {
+                methodInfo += ` [@${method.annotations.join(', @')}]`;
+              }
+              if (method.throwsExceptions.length > 0) {
+                methodInfo += ` throws ${method.throwsExceptions.join(', ')}`;
+              }
+              output.appendLine(methodInfo);
+            });
+          }
+          
+          // Dependências da classe
+          if (classInfo.dependencies.length > 0) {
+            output.appendLine(`   📚 Dependências (${classInfo.dependencies.length}):`);
+            classInfo.dependencies.forEach((dep, depIndex) => {
+              output.appendLine(`     ${depIndex + 1}. ${dep}`);
+            });
+          }
+        });
+      }
+
+      // Análise de Ramos de Decisão
+      output.appendLine('\n🔀 ANÁLISE DE RAMOS DE DECISÃO:');
+      output.appendLine(`   Total de ramos: ${decisionAnalysis.totalBranches}`);
+      output.appendLine(`   Complexidade Ciclomática: ${decisionAnalysis.cyclomaticComplexity}`);
+
+      decisionAnalysis.scenarios.forEach((scenario, index) => {
+        output.appendLine(`\n   🧩 CENÁRIO ${index + 1}: ${scenario.scenario}`);
+        output.appendLine(`      Cobertura: ${scenario.coverage} ramos`);
+        output.appendLine(`      Nível de risco: ${scenario.riskLevel.toUpperCase()}`);
+
+      scenario.branches.forEach((branch, idx) => {
+        output.appendLine(`        ${idx + 1}. [${branch.type}] ${branch.condition}`);
+        output.appendLine(`           Linha: ${branch.startLine} → ${branch.endLine}`);
+        output.appendLine(`           Complexidade: ${branch.complexity}`);
+          if (branch.calledFunctions.length > 0) {
+          output.appendLine(`           Funções chamadas: ${branch.calledFunctions.map(f => f.methodName).join(', ')}`);
+        }});
+      });
+
       
       // Cenários de teste
       output.appendLine('\n🧪 CENÁRIOS DE TESTE:');
@@ -212,14 +342,40 @@ export function activate(context: vscode.ExtensionContext) {
       output.appendLine(`ANÁLISE CONCLUÍDA - ${new Date().toLocaleString()}`);
       output.appendLine('='.repeat(60));
       
+      // Informações sobre o arquivo de testes gerado
+      if (testFileCreated) {
+        output.appendLine('\n📁 ARQUIVO DE TESTES GERADO:');
+        output.appendLine(`   Arquivo: ${searchResult.className}Test.java`);
+        output.appendLine(`   Localização: pasta test/`);
+        output.appendLine(`   Padrão: AAA (Arrange, Act, Assert)`);
+        output.appendLine(`   Total de testes: ${unitTestSuite.tests.length}`);
+      }
+      
+      output.appendLine('='.repeat(60));
+      
       output.show();
       
-      // Mensagem de sucesso personalizada
-      const successMessage = searchResult 
-        ? `Análise concluída! Método ${searchResult.className}.${name} encontrado. ${filteredScenarios.length} cenários gerados (nível ${level}).`
-        : `Análise concluída! ${filteredScenarios.length} cenários gerados (nível ${level}).`;
+      // Resumo final da análise
+      output.appendLine('\n📊 RESUMO FINAL DA ANÁLISE:');
+      output.appendLine('='.repeat(60));
       
-      vscode.window.showInformationMessage(successMessage);
+      if (searchResult) {
+        output.appendLine(`✅ Método ${searchResult.className}.${name} encontrado com sucesso`);
+      }
+      
+      output.appendLine(`📋 Cenários gerados: ${filteredScenarios.length} (nível ${level})`);
+      output.appendLine(`🔀 Ramos analisados: ${decisionAnalysis.totalBranches}`);
+      output.appendLine(`📈 Complexidade Ciclomática: ${decisionAnalysis.cyclomaticComplexity}`);
+      output.appendLine(`🏗️ Classes analisadas: ${advancedMockResult.classAnalysis.length}`);
+      
+      if (testFileCreated) {
+        output.appendLine(`📁 Arquivo de testes gerado: ${searchResult.className}Test.java`);
+      }
+      
+      output.appendLine('='.repeat(60));
+      
+      // Mensagem de sucesso simplificada
+      vscode.window.showInformationMessage(`Análise concluída! ${filteredScenarios.length} cenários gerados (nível ${level}).`);
       
     } catch (err) {
       const error = err as Error;
@@ -229,6 +385,15 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(disposable);
+
+  // Comando para limpar cache do parser
+  let clearCacheDisposable = vscode.commands.registerCommand('extension.clearParserCache', () => {
+    clearParserCache();
+    const stats = getCacheStats();
+    vscode.window.showInformationMessage(`Cache limpo! Estatísticas: ${JSON.stringify(stats)}`);
+  });
+
+  context.subscriptions.push(clearCacheDisposable);
 }
 
 function filterScenariosByLevel(scenarios: any[], level: number): any[] {
@@ -266,6 +431,52 @@ function getCategoryCounts(scenarios: any[]): { [key: string]: number } {
   });
   
   return counts;
+}
+
+async function saveUnitTestFile(unitTestSuite: any, documentUri: vscode.Uri): Promise<boolean> {
+  try {
+    // Obtém o diretório do arquivo atual
+    const currentDir = vscode.Uri.file(vscode.workspace.getWorkspaceFolder(documentUri)?.uri.fsPath || '');
+    
+    // Define o caminho para a pasta test
+    const testDir = vscode.Uri.joinPath(currentDir, 'src', 'test');
+    
+    // Verifica se existe a pasta test, se não existir, cria
+    try {
+      await vscode.workspace.fs.stat(testDir);
+      console.log('Pasta test já existe');
+    } catch (error) {
+      // Pasta test não existe, vamos criar
+      console.log('Pasta test não encontrada, criando...');
+      try {
+        await vscode.workspace.fs.createDirectory(testDir);
+        console.log('Pasta test criada com sucesso');
+      } catch (createError) {
+        console.error('Erro ao criar pasta test:', createError);
+        return false;
+      }
+    }
+    
+    // Gera o conteúdo do arquivo de teste
+    const testContent = UnitTestGenerator.generateJavaTestFile(unitTestSuite);
+    
+    // Define o nome do arquivo
+    const testFileName = `${unitTestSuite.className}Test.java`;
+    const testFilePath = vscode.Uri.joinPath(testDir, testFileName);
+    
+    // Converte o conteúdo para Uint8Array
+    const contentBytes = new TextEncoder().encode(testContent);
+    
+    // Salva o arquivo
+    await vscode.workspace.fs.writeFile(testFilePath, contentBytes);
+    
+    console.log(`Arquivo de testes criado: ${testFilePath.fsPath}`);
+    return true;
+    
+  } catch (error) {
+    console.error('Erro ao salvar arquivo de testes:', error);
+    return false;
+  }
 }
 
 export function deactivate() {}
