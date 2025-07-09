@@ -48,7 +48,6 @@ export function activate(context: vscode.ExtensionContext) {
       
       parsedFunction = searchResult.method!;
       
-      // Resto do código permanece igual...
       // Gera mocks baseados nas funções chamadas
       const mockFunctions = parsedFunction.calledFunctions.map(func => func.methodName);
       const mocks = generateMocks(mockFunctions);

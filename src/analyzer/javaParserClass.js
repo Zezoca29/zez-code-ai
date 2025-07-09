@@ -2,6 +2,8 @@
 // Parser Java melhorado com busca por classe e método
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.parseJavaFunctionInClass = parseJavaFunctionInClass;
+exports.analyzeDecisionBranches = analyzeDecisionBranches;
+exports.printDecisionAnalysis = printDecisionAnalysis;
 async function parseJavaFunctionInClass(code, className, methodName) {
     console.log(`=== BUSCA MELHORADA: ${className}.${methodName} ===`);
     try {
@@ -526,5 +528,419 @@ function isJavaKeyword(word) {
 }
 function isConstructorCall(word) {
     return /^[A-Z]/.test(word) && word.length > 1;
+}
+async function analyzeDecisionBranches(code, className, methodName) {
+    console.log(`=== ANÁLISE DE RAMOS DE DECISÃO: ${className}.${methodName} ===`);
+    try {
+        // Primeiro, obter o método usando o parser existente
+        const methodResult = await parseJavaFunctionInClass(code, className, methodName);
+        if (!methodResult.found || !methodResult.method) {
+            throw new Error(`Método ${methodName} não encontrado na classe ${className}`);
+        }
+        const method = methodResult.method;
+        const methodBody = extractMethodBodyFromCode(code, className, methodName);
+        // Analisar ramos de decisão
+        const conditionals = extractConditionalStatements(methodBody);
+        const switches = extractSwitchStatements(methodBody);
+        const scenarios = generateScenarioMappings(conditionals, switches);
+        const totalBranches = conditionals.reduce((sum, c) => sum + c.branches.length, 0) +
+            switches.reduce((sum, s) => sum + s.cases.length, 0);
+        const cyclomaticComplexity = calculateCyclomaticComplexity(conditionals, switches);
+        return {
+            conditionals,
+            switches,
+            totalBranches,
+            cyclomaticComplexity,
+            scenarios
+        };
+    }
+    catch (error) {
+        console.error('Erro na análise de ramos de decisão:', error);
+        throw error;
+    }
+}
+function extractMethodBodyFromCode(code, className, methodName) {
+    // Simplificação: buscar o método no código
+    const methodPattern = new RegExp(`(public|private|protected|static|final|abstract|synchronized)\\s+.*\\s+${methodName}\\s*\\([^)]*\\)\\s*\\{`);
+    const match = code.match(methodPattern);
+    if (!match) {
+        throw new Error(`Método ${methodName} não encontrado`);
+    }
+    const startIndex = match.index + match[0].length - 1;
+    return extractMethodBody(code, startIndex);
+}
+function extractConditionalStatements(code) {
+    const conditionals = [];
+    const lines = code.split('\n');
+    // Padrão para if-else completo
+    const ifPattern = /\bif\s*\(\s*([^)]+)\s*\)\s*\{?/g;
+    let match;
+    while ((match = ifPattern.exec(code)) !== null) {
+        const startIndex = match.index;
+        const condition = match[1].trim();
+        const startLine = code.substring(0, startIndex).split('\n').length;
+        // Extrair toda a estrutura if-else
+        const ifElseStructure = extractIfElseStructure(code, startIndex);
+        if (ifElseStructure) {
+            const branches = analyzeIfElseBranches(ifElseStructure, startLine);
+            const scenario = inferScenarioFromCondition(condition);
+            conditionals.push({
+                type: 'if-else',
+                mainCondition: condition,
+                branches,
+                startLine,
+                endLine: startLine + ifElseStructure.split('\n').length,
+                scenario,
+                hasElse: branches.some(b => b.type === 'else')
+            });
+        }
+    }
+    // Também detectar operadores ternários
+    const ternaryPattern = /([^?]+)\?\s*([^:]+)\s*:\s*([^;,)]+)/g;
+    while ((match = ternaryPattern.exec(code)) !== null) {
+        const startIndex = match.index;
+        const condition = match[1].trim();
+        const trueValue = match[2].trim();
+        const falseValue = match[3].trim();
+        const startLine = code.substring(0, startIndex).split('\n').length;
+        const trueBranch = {
+            type: 'if',
+            condition,
+            body: trueValue,
+            startLine,
+            endLine: startLine,
+            complexity: 1,
+            nestedLevel: 0,
+            variables: [],
+            calledFunctions: []
+        };
+        const falseBranch = {
+            type: 'else',
+            condition: `!(${condition})`,
+            body: falseValue,
+            startLine,
+            endLine: startLine,
+            complexity: 1,
+            nestedLevel: 0,
+            variables: [],
+            calledFunctions: []
+        };
+        conditionals.push({
+            type: 'ternary',
+            mainCondition: condition,
+            branches: [trueBranch, falseBranch],
+            startLine,
+            endLine: startLine,
+            scenario: inferScenarioFromCondition(condition),
+            hasElse: true
+        });
+    }
+    return conditionals;
+}
+function extractIfElseStructure(code, startIndex) {
+    let braceCount = 0;
+    let current = '';
+    let inString = false;
+    let stringChar = '';
+    let foundEnd = false;
+    for (let i = startIndex; i < code.length; i++) {
+        const char = code[i];
+        const prevChar = i > 0 ? code[i - 1] : '';
+        // Controle de strings
+        if ((char === '"' || char === "'") && prevChar !== '\\') {
+            if (!inString) {
+                inString = true;
+                stringChar = char;
+            }
+            else if (char === stringChar) {
+                inString = false;
+                stringChar = '';
+            }
+        }
+        current += char;
+        if (!inString) {
+            if (char === '{') {
+                braceCount++;
+            }
+            else if (char === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                    // Verificar se há else após este }
+                    const remaining = code.substring(i + 1).trim();
+                    if (remaining.startsWith('else')) {
+                        // Continuar para incluir o else
+                        continue;
+                    }
+                    else {
+                        foundEnd = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return foundEnd ? current : null;
+}
+function analyzeIfElseBranches(ifElseCode, startLine) {
+    const branches = [];
+    // Extrair ramos if, else if, else
+    const ifMatch = ifElseCode.match(/if\s*\(\s*([^)]+)\s*\)\s*\{([^}]*)\}/);
+    if (ifMatch) {
+        const condition = ifMatch[1].trim();
+        const body = ifMatch[2].trim();
+        branches.push({
+            type: 'if',
+            condition,
+            body,
+            startLine,
+            endLine: startLine + body.split('\n').length,
+            scenario: inferScenarioFromCondition(condition),
+            complexity: calculateBranchComplexity(body),
+            nestedLevel: 0,
+            variables: extractLocalVariables(body),
+            calledFunctions: extractCalledFunctions(body)
+        });
+    }
+    // Extrair else if
+    const elseIfPattern = /else\s+if\s*\(\s*([^)]+)\s*\)\s*\{([^}]*)\}/g;
+    let elseIfMatch;
+    while ((elseIfMatch = elseIfPattern.exec(ifElseCode)) !== null) {
+        const condition = elseIfMatch[1].trim();
+        const body = elseIfMatch[2].trim();
+        branches.push({
+            type: 'elseif',
+            condition,
+            body,
+            startLine: startLine + 1,
+            endLine: startLine + 1 + body.split('\n').length,
+            scenario: inferScenarioFromCondition(condition),
+            complexity: calculateBranchComplexity(body),
+            nestedLevel: 0,
+            variables: extractLocalVariables(body),
+            calledFunctions: extractCalledFunctions(body)
+        });
+    }
+    // Extrair else
+    const elseMatch = ifElseCode.match(/else\s*\{([^}]*)\}/);
+    if (elseMatch) {
+        const body = elseMatch[1].trim();
+        branches.push({
+            type: 'else',
+            condition: 'default',
+            body,
+            startLine: startLine + 2,
+            endLine: startLine + 2 + body.split('\n').length,
+            scenario: 'Caso padrão',
+            complexity: calculateBranchComplexity(body),
+            nestedLevel: 0,
+            variables: extractLocalVariables(body),
+            calledFunctions: extractCalledFunctions(body)
+        });
+    }
+    return branches;
+}
+function extractSwitchStatements(code) {
+    const switches = [];
+    const switchPattern = /switch\s*\(\s*([^)]+)\s*\)\s*\{([^}]+)\}/g;
+    let match;
+    while ((match = switchPattern.exec(code)) !== null) {
+        const expression = match[1].trim();
+        const switchBody = match[2];
+        const startIndex = match.index;
+        const startLine = code.substring(0, startIndex).split('\n').length;
+        const cases = extractSwitchCases(switchBody, startLine);
+        const defaultCase = cases.find(c => c.type === 'default');
+        const regularCases = cases.filter(c => c.type === 'case');
+        switches.push({
+            expression,
+            cases: regularCases,
+            defaultCase,
+            startLine,
+            endLine: startLine + switchBody.split('\n').length,
+            scenario: `Switch em ${expression}`
+        });
+    }
+    return switches;
+}
+function extractSwitchCases(switchBody, startLine) {
+    const cases = [];
+    // Extrair cases
+    const casePattern = /case\s+([^:]+):\s*([^case^default]*?)(?=case|default|$)/g;
+    let caseMatch;
+    while ((caseMatch = casePattern.exec(switchBody)) !== null) {
+        const caseValue = caseMatch[1].trim();
+        const caseBody = caseMatch[2].trim();
+        cases.push({
+            type: 'case',
+            condition: `${caseValue}`,
+            body: caseBody,
+            startLine: startLine + 1,
+            endLine: startLine + 1 + caseBody.split('\n').length,
+            scenario: `Caso ${caseValue}`,
+            complexity: calculateBranchComplexity(caseBody),
+            nestedLevel: 0,
+            variables: extractLocalVariables(caseBody),
+            calledFunctions: extractCalledFunctions(caseBody)
+        });
+    }
+    // Extrair default
+    const defaultMatch = switchBody.match(/default\s*:\s*([^}]*)/);
+    if (defaultMatch) {
+        const defaultBody = defaultMatch[1].trim();
+        cases.push({
+            type: 'default',
+            condition: 'default',
+            body: defaultBody,
+            startLine: startLine + 2,
+            endLine: startLine + 2 + defaultBody.split('\n').length,
+            scenario: 'Caso padrão',
+            complexity: calculateBranchComplexity(defaultBody),
+            nestedLevel: 0,
+            variables: extractLocalVariables(defaultBody),
+            calledFunctions: extractCalledFunctions(defaultBody)
+        });
+    }
+    return cases;
+}
+function inferScenarioFromCondition(condition) {
+    // Inferir cenário baseado na condição
+    const scenarios = {
+        'null': 'Verificação de nulidade',
+        'empty': 'Verificação de vazio',
+        'size': 'Verificação de tamanho',
+        'length': 'Verificação de comprimento',
+        'equals': 'Comparação de igualdade',
+        'contains': 'Verificação de conteúdo',
+        'instanceof': 'Verificação de tipo',
+        '==': 'Comparação de igualdade',
+        '!=': 'Comparação de desigualdade',
+        '<': 'Comparação menor que',
+        '>': 'Comparação maior que',
+        '<=': 'Comparação menor ou igual',
+        '>=': 'Comparação maior ou igual',
+        '&&': 'Condição múltipla (E)',
+        '||': 'Condição múltipla (OU)'
+    };
+    const lowerCondition = condition.toLowerCase();
+    for (const [keyword, scenario] of Object.entries(scenarios)) {
+        if (lowerCondition.includes(keyword)) {
+            return scenario;
+        }
+    }
+    return 'Condição personalizada';
+}
+function calculateBranchComplexity(body) {
+    let complexity = 1;
+    const controlStructures = [
+        /\bif\s*\(/g,
+        /\bwhile\s*\(/g,
+        /\bfor\s*\(/g,
+        /\bswitch\s*\(/g,
+        /\btry\s*\{/g,
+        /\bcatch\s*\(/g
+    ];
+    for (const pattern of controlStructures) {
+        const matches = body.match(pattern);
+        if (matches) {
+            complexity += matches.length;
+        }
+    }
+    return complexity;
+}
+function calculateCyclomaticComplexity(conditionals, switches) {
+    let complexity = 1; // Complexidade base
+    // Somar complexidade dos condicionais
+    for (const conditional of conditionals) {
+        complexity += conditional.branches.length - 1; // -1 porque o primeiro ramo não adiciona complexidade
+        // Adicionar complexidade para operadores lógicos
+        const logicalOperators = conditional.mainCondition.match(/&&|\|\|/g);
+        if (logicalOperators) {
+            complexity += logicalOperators.length;
+        }
+    }
+    // Somar complexidade dos switches
+    for (const switchStmt of switches) {
+        complexity += switchStmt.cases.length;
+    }
+    return complexity;
+}
+function generateScenarioMappings(conditionals, switches) {
+    const scenarioMap = new Map();
+    // Agrupar branches por cenário
+    for (const conditional of conditionals) {
+        for (const branch of conditional.branches) {
+            const scenario = branch.scenario || 'Cenário desconhecido';
+            if (!scenarioMap.has(scenario)) {
+                scenarioMap.set(scenario, []);
+            }
+            scenarioMap.get(scenario).push(branch);
+        }
+    }
+    for (const switchStmt of switches) {
+        const scenario = switchStmt.scenario || 'Switch desconhecido';
+        if (!scenarioMap.has(scenario)) {
+            scenarioMap.set(scenario, []);
+        }
+        scenarioMap.get(scenario).push(...switchStmt.cases);
+        if (switchStmt.defaultCase) {
+            scenarioMap.get(scenario).push(switchStmt.defaultCase);
+        }
+    }
+    // Converter para array e calcular métricas
+    const scenarios = [];
+    for (const [scenario, branches] of scenarioMap) {
+        const totalComplexity = branches.reduce((sum, b) => sum + b.complexity, 0);
+        const avgComplexity = totalComplexity / branches.length;
+        let riskLevel = 'low';
+        if (avgComplexity > 5)
+            riskLevel = 'high';
+        else if (avgComplexity > 2)
+            riskLevel = 'medium';
+        scenarios.push({
+            scenario,
+            branches,
+            coverage: branches.length,
+            riskLevel
+        });
+    }
+    return scenarios.sort((a, b) => b.coverage - a.coverage);
+}
+// Função utilitária para imprimir análise
+function printDecisionAnalysis(analysis) {
+    console.log('\n=== ANÁLISE DE RAMOS DE DECISÃO ===');
+    console.log(`Total de ramos: ${analysis.totalBranches}`);
+    console.log(`Complexidade ciclomática: ${analysis.cyclomaticComplexity}`);
+    console.log('\n--- CONDICIONAIS ---');
+    analysis.conditionals.forEach((conditional, index) => {
+        console.log(`${index + 1}. ${conditional.type.toUpperCase()}`);
+        console.log(`   Condição: ${conditional.mainCondition}`);
+        console.log(`   Cenário: ${conditional.scenario}`);
+        console.log(`   Ramos: ${conditional.branches.length}`);
+        console.log(`   Tem else: ${conditional.hasElse ? 'Sim' : 'Não'}`);
+        conditional.branches.forEach((branch, branchIndex) => {
+            console.log(`     ${branchIndex + 1}. ${branch.type}: ${branch.condition}`);
+            console.log(`        Complexidade: ${branch.complexity}`);
+            console.log(`        Variáveis: ${branch.variables.length}`);
+            console.log(`        Funções chamadas: ${branch.calledFunctions.length}`);
+        });
+    });
+    console.log('\n--- SWITCHES ---');
+    analysis.switches.forEach((switchStmt, index) => {
+        console.log(`${index + 1}. SWITCH`);
+        console.log(`   Expressão: ${switchStmt.expression}`);
+        console.log(`   Cenário: ${switchStmt.scenario}`);
+        console.log(`   Cases: ${switchStmt.cases.length}`);
+        console.log(`   Tem default: ${switchStmt.defaultCase ? 'Sim' : 'Não'}`);
+        switchStmt.cases.forEach((caseStmt, caseIndex) => {
+            console.log(`     ${caseIndex + 1}. case ${caseStmt.condition}`);
+            console.log(`        Complexidade: ${caseStmt.complexity}`);
+        });
+    });
+    console.log('\n--- CENÁRIOS ---');
+    analysis.scenarios.forEach((scenario, index) => {
+        console.log(`${index + 1}. ${scenario.scenario}`);
+        console.log(`   Cobertura: ${scenario.coverage} ramos`);
+        console.log(`   Nível de risco: ${scenario.riskLevel.toUpperCase()}`);
+    });
 }
 //# sourceMappingURL=javaParserClass.js.map

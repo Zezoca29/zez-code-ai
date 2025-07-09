@@ -74,7 +74,6 @@ function activate(context) {
                 return;
             }
             parsedFunction = searchResult.method;
-            // Resto do código permanece igual...
             // Gera mocks baseados nas funções chamadas
             const mockFunctions = parsedFunction.calledFunctions.map(func => func.methodName);
             const mocks = (0, mockGenerator_1.generateMocks)(mockFunctions);
