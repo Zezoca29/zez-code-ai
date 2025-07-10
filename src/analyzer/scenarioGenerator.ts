@@ -1,4 +1,5 @@
 import { Parameter, ParsedFunction, CalledFunction  } from './javaParser';
+import { SmartTypeInference } from './smartTypeInference';
 
 export interface TestScenario {
   name: string;
@@ -187,36 +188,9 @@ export class EnhancedScenarioGenerator {
   }
   
   private getDefaultValueForType(type: string): any {
-    const typeMap: { [key: string]: any } = {
-      'int': 1,
-      'Integer': 1,
-      'long': 1000,
-      'Long': 1000,
-      'float': 1.0,
-      'Float': 1.0,
-      'double': 1.0,
-      'Double': 1.0,
-      'boolean': true,
-      'Boolean': true,
-      'String': '"test"',
-      'char': "'a'",
-      'Character': "'a'",
-      'byte': 1,
-      'Byte': 1,
-      'short': 1,
-      'Short': 1
-    };
-    
-    if (typeMap[type]) {
-      return typeMap[type];
-    }
-    
-    if (type.includes('List')) return '[]';
-    if (type.includes('Set')) return '[]';
-    if (type.includes('Map')) return '{}';
-    if (type.endsWith('[]')) return '[]';
-    
-    return 'new ' + type + '()';
+    // Use smart type inference for better default value generation
+    const inference = SmartTypeInference.inferType(type);
+    return inference.javaValue;
   }
   
   private getValidValuesForType(type: string): any[] {
@@ -291,9 +265,13 @@ export class EnhancedScenarioGenerator {
   }
   
   private generateMockSetup(calledFunctions: CalledFunction[]): string[] {
-    return calledFunctions.map(func => 
-      `when(${func.className || 'mockObject'}.${func.methodName}(${func.parameters.map(() => 'any()').join(', ')})).thenReturn(${this.getDefaultReturnValue(func.returnType || 'Object')});`
-    );
+    // Gera setup de mocks apenas para dependências reais, nunca mockObject
+    return calledFunctions
+      .filter(func => func.className && !['ResponseEntity', 'HttpStatus', 'List', 'Map', 'Set', 'Optional'].includes(func.className))
+      .map(func => {
+        const mockName = func.className!.charAt(0).toLowerCase() + func.className!.slice(1);
+        return `when(${mockName}.${func.methodName}(${func.parameters.map(() => 'any()').join(', ')})).thenReturn(${this.getDefaultReturnValue(func.returnType || 'Object')});`;
+      });
   }
   
   private generateExceptionMockSetup(calledFunction: CalledFunction): string[] {
@@ -317,11 +295,14 @@ export class EnhancedScenarioGenerator {
       }
     }
     
-    // Verifica se métodos foram chamados
-    func.calledFunctions.forEach(calledFunction => {
-      assertions.push(`verify(${calledFunction.className || 'mockObject'}).${calledFunction.methodName}(${calledFunction.parameters.map(() => 'any()').join(', ')});`);
-    });
-    
+    // Verifica se métodos foram chamados, apenas para dependências reais
+    func.calledFunctions
+      .filter(calledFunction => calledFunction.className && !['ResponseEntity', 'HttpStatus', 'List', 'Map', 'Set', 'Optional'].includes(calledFunction.className))
+      .forEach(calledFunction => {
+        const mockName = calledFunction.className!.charAt(0).toLowerCase() + calledFunction.className!.slice(1);
+        assertions.push(`verify(${mockName}).${calledFunction.methodName}(${calledFunction.parameters.map(() => 'any()').join(', ')});`);
+      });
+  
     return assertions;
   }
   
@@ -361,35 +342,36 @@ export class EnhancedScenarioGenerator {
   }
   
   private getDefaultReturnValue(type: string): string {
-    if (type === 'void') return '';
-    if (type === 'String') return '"mockedValue"';
-    if (type === 'int' || type === 'Integer') return '1';
-    if (type === 'boolean' || type === 'Boolean') return 'true';
-    if (type === 'long' || type === 'Long') return '1L';
-    if (type === 'double' || type === 'Double') return '1.0';
-    if (type === 'float' || type === 'Float') return '1.0f';
-    if (type.includes('List')) return 'Arrays.asList()';
-    if (type.endsWith('[]')) return 'new ' + type.replace('[]', '[0]');
-    return 'mock(' + type + '.class)';
+    // Use smart type inference for better mock return value generation
+    return SmartTypeInference.generateMockReturnValue(type);
   }
   
   private generateSetupCode(func: ParsedFunction): string[] {
     const setupCode: string[] = [];
-    
-    // Setup para mocks
-    const uniqueClasses = [...new Set(func.calledFunctions.map(f => f.className).filter(c => c))];
-    uniqueClasses.forEach(className => {
-      if (className) {
-        setupCode.push(`@Mock`);
-        setupCode.push(`private ${className} ${className.toLowerCase()}Mock;`);
+    // Apenas inicialização de dados (ex: DTOs), não mocks nem controller
+    // Exemplo: sampleTransaction = new TransactionDTO();
+    // (Detectar DTOs por heurística: termina com DTO ou contém DTO)
+    func.localVariables?.forEach(variable => {
+      if (variable.type.endsWith('DTO') || variable.type.includes('DTO')) {
+        setupCode.push(`${variable.name} = new ${variable.type}();`);
       }
     });
-    
-    // Setup do objeto sendo testado
-    setupCode.push(`@InjectMocks`);
-    setupCode.push(`private ${this.extractClassName(func)} ${this.extractClassName(func).toLowerCase()};`);
-    
     return setupCode;
+  }
+  
+  public static generateClassAttributes(func: ParsedFunction, className: string): string[] {
+    const attributes: string[] = [];
+    // Mocks: dependências reais do controller (exclui ResponseEntity, tipos java, etc)
+    const uniqueClasses = [...new Set(func.calledFunctions.map(f => f.className).filter((c): c is string => !!c && !['ResponseEntity', 'HttpStatus', 'List', 'Map', 'Set', 'Optional'].includes(c)))];
+    uniqueClasses.forEach(className => {
+      attributes.push(`@Mock`);
+      attributes.push(`private ${className} ${className.charAt(0).toLowerCase() + className.slice(1)};`);
+    });
+    // Controller
+    attributes.push(`@InjectMocks`);
+    attributes.push(`private ${className} ${className.charAt(0).toLowerCase() + className.slice(1)};`);
+    // DTOs e outros atributos podem ser adicionados se necessário
+    return attributes;
   }
   
   private extractDependencies(func: ParsedFunction): string[] {
@@ -417,12 +399,23 @@ export class EnhancedScenarioGenerator {
       'import static org.junit.jupiter.api.Assertions.*;'
     ];
     
+    // Adiciona imports das classes que serão mockadas
+    const mockableClasses = [...new Set(func.calledFunctions
+      .filter(f => f.className && !['ResponseEntity', 'HttpStatus', 'List', 'Map', 'Set', 'Optional'].includes(f.className))
+      .map(f => f.className!))];
+    
+    mockableClasses.forEach(className => {
+      imports.push(`import ${className};`);
+    });
+    
     return imports;
   }
   
-  private extractClassName(func: ParsedFunction): string {
-    // Esta função deveria extrair o nome da classe do contexto
-    // Por ora, retorna um nome genérico
+  public static extractClassName(func: ParsedFunction): string {
+    // Usa o nome real da classe se disponível
+    if ((func as any).className && typeof (func as any).className === 'string') {
+      return (func as any).className;
+    }
     return 'TestedClass';
   }
 }

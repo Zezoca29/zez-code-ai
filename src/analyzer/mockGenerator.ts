@@ -1,5 +1,6 @@
 import { CalledFunction } from './javaParser';
 import { ClassAnalyzer, MockDependencyInfo } from './classAnalyzer';
+import { SmartTypeInference } from './smartTypeInference';
 
 export function generateMock(calledFunction: CalledFunction): string {
   const { methodName, className, parameters, isStaticCall, returnType } = calledFunction;
@@ -217,23 +218,8 @@ export async function generateAdvancedMocks(
         ? method.parameters.map(p => `any(${p.type}.class)`).join(', ')
         : '';
       
-      // Mock com retorno específico baseado no tipo
-      let mockReturn = `mock${method.returnType}()`;
-      if (method.returnType === 'void') {
-        mockReturn = 'doNothing()';
-      } else if (method.returnType === 'String') {
-        mockReturn = '"mockString"';
-      } else if (method.returnType === 'Integer' || method.returnType === 'int') {
-        mockReturn = '1';
-      } else if (method.returnType === 'Boolean' || method.returnType === 'boolean') {
-        mockReturn = 'true';
-      } else if (method.returnType === 'Long' || method.returnType === 'long') {
-        mockReturn = '1L';
-      } else if (method.returnType === 'Double' || method.returnType === 'double') {
-        mockReturn = '1.0';
-      } else if (method.returnType === 'Float' || method.returnType === 'float') {
-        mockReturn = '1.0f';
-      }
+      // Use smart type inference for better mock return values
+      let mockReturn = SmartTypeInference.generateMockReturnValue(method.returnType);
       
       const mockObjectName = `${classInfo.className.toLowerCase()}Mock`;
       const advancedMock = `when(${mockObjectName}.${method.name}(${mockParams})).thenReturn(${mockReturn});`;

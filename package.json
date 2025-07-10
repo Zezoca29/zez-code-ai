@@ -2,14 +2,43 @@
   "name": "zez-code-ai",
   "displayName": "Zez Code AI",
   "description": "O Zez Code AI para Java é uma extensão indispensável para desenvolvedores Java que utilizam o VSCode e buscam simplificar e aprimorar seu processo de criação de testes. Com esta ferramenta, você pode analisar funções específicas do seu código de forma rápida e eficiente, gerando automaticamente cenários de teste completos e personalizados, incluindo mocks para funções chamadas. Seja você um desenvolvedor experiente ou iniciante, esta extensão tornará seus testes mais robustos e fáceis de implementar.",
-  "version": "0.0.1",
+  "version": "0.0.2",
+  "publisher": "ZezTechnology",
+  "icon": "images/zezcodelogo.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Zezoca29/zez-code-ai.git"
+  },
   "engines": {
     "vscode": "^1.101.0"
   },
   "categories": [
     "Other"
   ],
+  "keywords": [
+    "java",
+    "testing",
+    "unit-test",
+    "ai",
+    "llm",
+    "code-generation",
+    "test-generation",
+    "mockito",
+    "junit"
+  ],
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Zezoca29/zez-code-ai/issues"
+  },
+  "homepage": "https://github.com/Zezoca29/zez-code-ai#readme",
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "onCommand:zez-code-ai.helloWorld",
+    "onCommand:extension.analyzeJavaFunction",
+    "onCommand:extension.clearParserCache",
+    "onCommand:extension.completeTestWithLLM",
+    "onCommand:extension.showLLMPrompt"
+  ],
   "contributes": {
     "commands": [
       {
@@ -19,6 +48,18 @@
       {
         "command": "extension.analyzeJavaFunction",
         "title": "Analisar Função Java (Zez Code AI)"
+      },
+      {
+        "command": "extension.clearParserCache",
+        "title": "Limpar Cache do Parser (Zez Code AI)"
+      },
+      {
+        "command": "extension.completeTestWithLLM",
+        "title": "Completar Teste com LLM (Zez Code AI)"
+      },
+      {
+        "command": "extension.showLLMPrompt",
+        "title": "Mostrar Prompt LLM (Zez Code AI)"
       }
     ]
   },

@@ -41,6 +41,8 @@ const scenarioGenerator_1 = require("./analyzer/scenarioGenerator");
 const javaParserClass_1 = require("./analyzer/javaParserClass"); // Parser com busca em classe
 const unitTestGenerator_1 = require("./analyzer/unitTestGenerator");
 const mockGenerator_1 = require("./analyzer/mockGenerator");
+const testValidator_1 = require("./analyzer/testValidator");
+const testCompletionService_1 = require("./analyzer/testCompletionService");
 function activate(context) {
     let disposable = vscode.commands.registerCommand('extension.analyzeJavaFunction', async () => {
         const editor = vscode.window.activeTextEditor;
@@ -90,8 +92,20 @@ function activate(context) {
             const testSuite = scenarioGenerator_1.EnhancedScenarioGenerator.generateTestSuite(parsedFunction);
             // Filtra cenários baseado no nível selecionado
             const filteredScenarios = filterScenariosByLevel(testSuite.scenarios, level);
+            // Gera atributos da classe (mocks e controller)
+            const classAttributes = scenarioGenerator_1.EnhancedScenarioGenerator.generateClassAttributes(parsedFunction, searchResult.className);
             // Gera testes unitários no padrão AAA
-            const unitTestSuite = unitTestGenerator_1.UnitTestGenerator.generateUnitTestSuite({ ...testSuite, scenarios: filteredScenarios }, searchResult.className);
+            const unitTestSuite = unitTestGenerator_1.UnitTestGenerator.generateUnitTestSuite({ ...testSuite, scenarios: filteredScenarios }, searchResult.className, classAttributes);
+            // Validate the generated test suite
+            const validationContext = {
+                className: searchResult.className,
+                methodName: name,
+                returnType: parsedFunction.returnType,
+                parameters: parsedFunction.parameters,
+                calledFunctions: parsedFunction.calledFunctions
+            };
+            const testContent = unitTestGenerator_1.UnitTestGenerator.generateJavaTestFile(unitTestSuite);
+            const validationResult = testValidator_1.TestValidator.validateGeneratedTest(testContent, validationContext);
             // Tenta salvar o arquivo de testes unitários
             let testFileCreated = false;
             try {
@@ -99,6 +113,24 @@ function activate(context) {
             }
             catch (error) {
                 console.warn('Erro ao salvar arquivo de testes:', error);
+            }
+            // LLM Test Completion Feature
+            let llmCompletionResult = null;
+            try {
+                const testContent = unitTestGenerator_1.UnitTestGenerator.generateJavaTestFile(unitTestSuite);
+                const completionRequest = testCompletionService_1.TestCompletionService.createCompletionRequest(code, searchResult.className, name, testContent, level);
+                const completionService = new testCompletionService_1.TestCompletionService();
+                llmCompletionResult = await completionService.completeUnitTest(completionRequest);
+                // Save the completed test if successful
+                if (llmCompletionResult.success && llmCompletionResult.completedTestCode) {
+                    const completedTestSuite = { ...unitTestSuite };
+                    // Update the test content with LLM completion
+                    // This would require updating the UnitTestSuite with the new content
+                    console.log('LLM completed test successfully');
+                }
+            }
+            catch (error) {
+                console.warn('LLM test completion failed:', error);
             }
             const output = vscode.window.createOutputChannel('Java Function Analyzer');
             output.clear();
@@ -343,6 +375,61 @@ function activate(context) {
                 output.appendLine(`   Padrão: AAA (Arrange, Act, Assert)`);
                 output.appendLine(`   Total de testes: ${unitTestSuite.tests.length}`);
             }
+            // Validation results
+            output.appendLine('\n🔍 VALIDAÇÃO DO TESTE GERADO:');
+            output.appendLine(`   Score de Qualidade: ${validationResult.score}/100`);
+            output.appendLine(`   Status: ${validationResult.isValid ? '✅ Válido' : '❌ Com Problemas'}`);
+            if (validationResult.errors.length > 0) {
+                output.appendLine('\n   ❌ ERROS CRÍTICOS:');
+                validationResult.errors.forEach(error => {
+                    output.appendLine(`     • ${error}`);
+                });
+            }
+            if (validationResult.warnings.length > 0) {
+                output.appendLine('\n   ⚠️ AVISOS:');
+                validationResult.warnings.forEach(warning => {
+                    output.appendLine(`     • ${warning}`);
+                });
+            }
+            if (validationResult.suggestions.length > 0) {
+                output.appendLine('\n   💡 SUGESTÕES DE MELHORIA:');
+                validationResult.suggestions.forEach(suggestion => {
+                    output.appendLine(`     • ${suggestion}`);
+                });
+            }
+            // Show fixes for critical issues
+            if (validationResult.errors.length > 0) {
+                const fixes = testValidator_1.TestValidator.getFixesForIssues(validationResult);
+                if (fixes.length > 0) {
+                    output.appendLine('\n   🔧 CORREÇÕES SUGERIDAS:');
+                    fixes.forEach(fix => {
+                        output.appendLine(`     • ${fix}`);
+                    });
+                }
+            }
+            // LLM Completion Results
+            if (llmCompletionResult) {
+                output.appendLine('\n🤖 LLM TEST COMPLETION:');
+                output.appendLine(`   Status: ${llmCompletionResult.success ? '✅ Completed' : '❌ Failed'}`);
+                output.appendLine(`   LLM Confidence: ${llmCompletionResult.llmResponse.confidence}%`);
+                output.appendLine(`   Quality Improvement: ${llmCompletionResult.validationResult.score - validationResult.score} points`);
+                if (llmCompletionResult.improvements.length > 0) {
+                    output.appendLine('\n   🚀 IMPROVEMENTS MADE:');
+                    llmCompletionResult.improvements.slice(0, 5).forEach(improvement => {
+                        output.appendLine(`     • ${improvement}`);
+                    });
+                }
+                if (llmCompletionResult.success && llmCompletionResult.completedTestCode) {
+                    output.appendLine('\n   📝 COMPLETED TEST PREVIEW:');
+                    const previewLines = llmCompletionResult.completedTestCode.split('\n').slice(0, 10);
+                    previewLines.forEach(line => {
+                        output.appendLine(`     ${line}`);
+                    });
+                    if (llmCompletionResult.completedTestCode.split('\n').length > 10) {
+                        output.appendLine('     ... (truncated)');
+                    }
+                }
+            }
             output.appendLine('='.repeat(60));
             output.show();
             // Resumo final da análise
@@ -376,6 +463,115 @@ function activate(context) {
         vscode.window.showInformationMessage(`Cache limpo! Estatísticas: ${JSON.stringify(stats)}`);
     });
     context.subscriptions.push(clearCacheDisposable);
+    // Comando para completar testes com LLM
+    let llmCompletionDisposable = vscode.commands.registerCommand('extension.completeTestWithLLM', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showErrorMessage('Nenhum editor de texto ativo.');
+            return;
+        }
+        const document = editor.document;
+        const code = document.getText();
+        // Get user input for class and method
+        const { name, level, className } = await (0, functionPicker_1.getFunctionFromUser)();
+        if (!name || !className) {
+            vscode.window.showWarningMessage('Nome da classe e método são obrigatórios.');
+            return;
+        }
+        try {
+            // Parse the method
+            const searchResult = await (0, javaParserClass_1.parseJavaFunctionInClass)(code, className.trim(), name);
+            if (!searchResult.className) {
+                vscode.window.showErrorMessage(`Método ${className}.${name} não encontrado.`);
+                return;
+            }
+            // Generate partial test
+            const parsedFunction = searchResult.method;
+            const testSuite = scenarioGenerator_1.EnhancedScenarioGenerator.generateTestSuite(parsedFunction);
+            const filteredScenarios = filterScenariosByLevel(testSuite.scenarios, level);
+            const classAttributes = scenarioGenerator_1.EnhancedScenarioGenerator.generateClassAttributes(parsedFunction, searchResult.className);
+            const unitTestSuite = unitTestGenerator_1.UnitTestGenerator.generateUnitTestSuite({ ...testSuite, scenarios: filteredScenarios }, searchResult.className, classAttributes);
+            const partialTestCode = unitTestGenerator_1.UnitTestGenerator.generateJavaTestFile(unitTestSuite);
+            // Create completion request
+            const completionRequest = testCompletionService_1.TestCompletionService.createCompletionRequest(code, searchResult.className, name, partialTestCode, level);
+            // Show progress
+            vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Completando teste com LLM...",
+                cancellable: false
+            }, async (progress) => {
+                progress.report({ increment: 0, message: "Analisando código..." });
+                const completionService = new testCompletionService_1.TestCompletionService();
+                const result = await completionService.completeUnitTest(completionRequest);
+                progress.report({ increment: 100, message: "Concluído!" });
+                // Show results
+                const output = vscode.window.createOutputChannel('LLM Test Completion');
+                output.clear();
+                output.append(testCompletionService_1.TestCompletionService.formatCompletionResult(result));
+                output.show();
+                // Show notification
+                if (result.success) {
+                    vscode.window.showInformationMessage(`Teste completado com sucesso! Score: ${result.validationResult.score}/100`);
+                }
+                else {
+                    vscode.window.showWarningMessage(`Falha na completação do teste. Verifique o output para detalhes.`);
+                }
+            });
+        }
+        catch (error) {
+            vscode.window.showErrorMessage(`Erro na completação do teste: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+        }
+    });
+    context.subscriptions.push(llmCompletionDisposable);
+    // Comando para mostrar apenas o prompt LLM
+    let showPromptDisposable = vscode.commands.registerCommand('extension.showLLMPrompt', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showErrorMessage('Nenhum editor de texto ativo.');
+            return;
+        }
+        const document = editor.document;
+        const code = document.getText();
+        // Get user input for class and method
+        const { name, level, className } = await (0, functionPicker_1.getFunctionFromUser)();
+        if (!name || !className) {
+            vscode.window.showWarningMessage('Nome da classe e método são obrigatórios.');
+            return;
+        }
+        try {
+            // Parse the method
+            const searchResult = await (0, javaParserClass_1.parseJavaFunctionInClass)(code, className.trim(), name);
+            if (!searchResult.className) {
+                vscode.window.showErrorMessage(`Método ${className}.${name} não encontrado.`);
+                return;
+            }
+            // Generate partial test
+            const parsedFunction = searchResult.method;
+            const testSuite = scenarioGenerator_1.EnhancedScenarioGenerator.generateTestSuite(parsedFunction);
+            const filteredScenarios = filterScenariosByLevel(testSuite.scenarios, level);
+            const classAttributes = scenarioGenerator_1.EnhancedScenarioGenerator.generateClassAttributes(parsedFunction, searchResult.className);
+            const unitTestSuite = unitTestGenerator_1.UnitTestGenerator.generateUnitTestSuite({ ...testSuite, scenarios: filteredScenarios }, searchResult.className, classAttributes);
+            const partialTestCode = unitTestGenerator_1.UnitTestGenerator.generateJavaTestFile(unitTestSuite);
+            // Create completion request to get the prompt
+            const completionRequest = testCompletionService_1.TestCompletionService.createCompletionRequest(code, searchResult.className, name, partialTestCode, level);
+            // Get the LLM prompt without sending it
+            const prompt = testCompletionService_1.TestCompletionService.generateLLMPrompt(completionRequest);
+            // Show the prompt in a new document
+            const promptDocument = await vscode.workspace.openTextDocument({
+                content: prompt,
+                language: 'markdown'
+            });
+            await vscode.window.showTextDocument(promptDocument, {
+                preview: false,
+                viewColumn: vscode.ViewColumn.Beside
+            });
+            vscode.window.showInformationMessage('Prompt LLM exibido em nova aba!');
+        }
+        catch (error) {
+            vscode.window.showErrorMessage(`Erro ao gerar prompt: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+        }
+    });
+    context.subscriptions.push(showPromptDisposable);
 }
 function filterScenariosByLevel(scenarios, level) {
     switch (level) {

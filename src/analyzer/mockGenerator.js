@@ -6,6 +6,7 @@ exports.generateMockSetup = generateMockSetup;
 exports.generateAdvancedMocks = generateAdvancedMocks;
 exports.generateCompleteMockSetup = generateCompleteMockSetup;
 const classAnalyzer_1 = require("./classAnalyzer");
+const smartTypeInference_1 = require("./smartTypeInference");
 function generateMock(calledFunction) {
     const { methodName, className, parameters, isStaticCall, returnType } = calledFunction;
     // Determinar o tipo de retorno baseado na classe ou usar padrão
@@ -192,29 +193,8 @@ async function generateAdvancedMocks(code, calledFunctions) {
             const mockParams = method.parameters.length > 0
                 ? method.parameters.map(p => `any(${p.type}.class)`).join(', ')
                 : '';
-            // Mock com retorno específico baseado no tipo
-            let mockReturn = `mock${method.returnType}()`;
-            if (method.returnType === 'void') {
-                mockReturn = 'doNothing()';
-            }
-            else if (method.returnType === 'String') {
-                mockReturn = '"mockString"';
-            }
-            else if (method.returnType === 'Integer' || method.returnType === 'int') {
-                mockReturn = '1';
-            }
-            else if (method.returnType === 'Boolean' || method.returnType === 'boolean') {
-                mockReturn = 'true';
-            }
-            else if (method.returnType === 'Long' || method.returnType === 'long') {
-                mockReturn = '1L';
-            }
-            else if (method.returnType === 'Double' || method.returnType === 'double') {
-                mockReturn = '1.0';
-            }
-            else if (method.returnType === 'Float' || method.returnType === 'float') {
-                mockReturn = '1.0f';
-            }
+            // Use smart type inference for better mock return values
+            let mockReturn = smartTypeInference_1.SmartTypeInference.generateMockReturnValue(method.returnType);
             const mockObjectName = `${classInfo.className.toLowerCase()}Mock`;
             const advancedMock = `when(${mockObjectName}.${method.name}(${mockParams})).thenReturn(${mockReturn});`;
             advancedMocks.push(advancedMock);

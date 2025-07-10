@@ -1,51 +1,43 @@
-# zez-code-ai README
+# Zez Code AI
 
-This is the README for your extension "zez-code-ai". After writing up a brief description, we recommend including the following sections.
+O Zez Code AI para Java é uma extensão indispensável para desenvolvedores Java que utilizam o VSCode e buscam simplificar e aprimorar seu processo de criação de testes. Com esta ferramenta, você pode analisar funções específicas do seu código de forma rápida e eficiente, gerando automaticamente cenários de teste completos e personalizados, incluindo mocks para funções chamadas.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- **Análise de Funções Java**: Analisa automaticamente funções Java e identifica dependências
+- **Geração de Testes Unitários**: Gera testes unitários completos e personalizados
+- **Criação de Mocks**: Gera automaticamente mocks para funções dependentes
+- **Cenários de Teste**: Cria cenários de teste abrangentes incluindo casos de sucesso e erro
+- **Integração com VSCode**: Interface nativa do VSCode para fácil utilização
 
-For example if there is an image subfolder under your extension project workspace:
+### Comandos Disponíveis
 
-\!\[feature X\]\(images/feature-x.png\)
-
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+- `Analisar Função Java (Zez Code AI)`: Analisa a função selecionada e gera testes
+- `Hello World`: Comando de exemplo para verificação da extensão
 
 ## Requirements
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+- Visual Studio Code 1.101.0 ou superior
+- Projetos Java com arquivos `.java`
+- Node.js (para desenvolvimento)
 
 ## Extension Settings
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+Esta extensão não adiciona configurações específicas no momento. Todas as funcionalidades estão disponíveis através dos comandos do VSCode.
 
 ## Known Issues
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+- A extensão está em desenvolvimento ativo
+- Algumas funcionalidades podem estar em evolução
 
 ## Release Notes
 
-Users appreciate release notes as you update your extension.
+### 0.0.1
 
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+- Versão inicial da extensão Zez Code AI
+- Análise básica de funções Java
+- Geração de testes unitários
+- Criação de mocks automáticos
 
 ---
 

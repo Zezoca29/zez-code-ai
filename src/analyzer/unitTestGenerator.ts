@@ -1,5 +1,7 @@
 import { TestScenario, TestSuite } from './scenarioGenerator';
 import { ParsedFunction } from './javaParser';
+import { SmartTypeInference } from './smartTypeInference';
+import { TestValidator, TestValidationResult, TestValidationContext } from './testValidator';
 
 export interface UnitTest {
   name: string;
@@ -17,16 +19,33 @@ export interface UnitTestSuite {
   imports: string[];
   setupCode: string[];
   dependencies: string[];
+  classAttributes: string[]; // NOVO CAMPO: atributos da classe (mocks, controller)
+  validationResult?: TestValidationResult; // Validation result for the test suite
 }
 
 export class UnitTestGenerator {
   
-  static generateUnitTestSuite(testSuite: TestSuite, className: string): UnitTestSuite {
+  static generateUnitTestSuite(testSuite: TestSuite, className: string, classAttributes: string[]): UnitTestSuite {
     const generator = new UnitTestGenerator();
     
     const tests: UnitTest[] = testSuite.scenarios.map(scenario => 
-      generator.convertScenarioToUnitTest(scenario, testSuite.functionName)
+      generator.convertScenarioToUnitTest(scenario, testSuite.functionName, className)
     );
+    
+    // Validate the generated test suite
+    const validationContext: TestValidationContext = {
+      className,
+      methodName: testSuite.functionName,
+      returnType: 'Object', // Will be inferred from scenarios
+      parameters: [], // Will be populated from scenarios
+      calledFunctions: []
+    };
+    
+    const validationResult = TestValidator.validateTestScenarios(testSuite.scenarios, validationContext);
+    
+    if (!validationResult.isValid) {
+      console.warn('Test validation issues found:', validationResult.errors);
+    }
     
     return {
       className,
@@ -34,15 +53,17 @@ export class UnitTestGenerator {
       tests,
       imports: testSuite.imports,
       setupCode: testSuite.setupCode,
-      dependencies: testSuite.dependencies
+      dependencies: testSuite.dependencies,
+      classAttributes,
+      validationResult // Add validation result to the suite
     };
   }
   
-  private convertScenarioToUnitTest(scenario: TestScenario, methodName: string): UnitTest {
+  private convertScenarioToUnitTest(scenario: TestScenario, methodName: string, className: string): UnitTest {
     return {
       name: scenario.name,
       arrange: this.generateArrangeSection(scenario),
-      act: this.generateActSection(scenario, methodName),
+      act: this.generateActSection(scenario, methodName, className),
       assert: this.generateAssertSection(scenario),
       category: scenario.category,
       description: scenario.description
@@ -74,11 +95,13 @@ export class UnitTestGenerator {
     return arrange;
   }
   
-  private generateActSection(scenario: TestScenario, methodName: string): string {
+  private generateActSection(scenario: TestScenario, methodName: string, className: string): string {
     const inputs = Object.keys(scenario.inputs);
     const inputParams = inputs.length > 0 ? inputs.join(', ') : '';
     
-    return `        ${this.getReturnType(scenario)} result = ${methodName}(${inputParams});`;
+    // Usa o nome da instância da classe (primeira letra minúscula da classe)
+    const instanceName = className.charAt(0).toLowerCase() + className.slice(1);
+    return `        ${this.getReturnType(scenario)} result = ${instanceName}.${methodName}(${inputParams});`;
   }
   
   private generateAssertSection(scenario: TestScenario): string[] {
@@ -93,29 +116,15 @@ export class UnitTestGenerator {
   }
   
   private convertToJavaValue(value: any): string {
-    if (value === null) return 'null';
-    if (typeof value === 'string') return `"${value}"`;
-    if (typeof value === 'boolean') return value ? 'true' : 'false';
-    if (typeof value === 'number') {
-      if (Number.isInteger(value)) return value.toString();
-      return value.toString() + (value.toString().includes('.') ? '' : '.0');
-    }
-    if (Array.isArray(value)) {
-      return `Arrays.asList(${value.map(v => this.convertToJavaValue(v)).join(', ')})`;
-    }
-    return value.toString();
+    // Use smart type inference for better conversion
+    const inference = SmartTypeInference.convertToJavaValue(value, 'Object');
+    return inference.javaValue;
   }
   
   private getJavaType(value: any): string {
-    if (value === null) return 'Object';
-    if (typeof value === 'string') return 'String';
-    if (typeof value === 'boolean') return 'boolean';
-    if (typeof value === 'number') {
-      if (Number.isInteger(value)) return 'int';
-      return 'double';
-    }
-    if (Array.isArray(value)) return 'List<Object>';
-    return 'Object';
+    // Use smart type inference for better type detection
+    const inference = SmartTypeInference.convertToJavaValue(value, 'Object');
+    return inference.javaType;
   }
   
   private getReturnType(scenario: TestScenario): string {
@@ -168,10 +177,21 @@ export class UnitTestGenerator {
     content += generator.generateImports(testSuite.imports);
     content += '\n';
     
+    // Anotação do teste
+    content += '@ExtendWith(MockitoExtension.class)\n';
+    
     // Classe de teste
     content += `public class ${testSuite.className}Test {\n\n`;
     
-    // Setup da classe
+    // Atributos da classe (mocks e controller)
+    if (testSuite.classAttributes && testSuite.classAttributes.length > 0) {
+      testSuite.classAttributes.forEach(attr => {
+        content += `    ${attr}\n`;
+      });
+      content += '\n';
+    }
+    
+    // Setup de dados (@BeforeEach)
     if (testSuite.setupCode.length > 0) {
       content += '    @BeforeEach\n';
       content += '    public void setUp() {\n';
@@ -196,10 +216,14 @@ export class UnitTestGenerator {
     const defaultImports = [
       'import org.junit.jupiter.api.Test;',
       'import org.junit.jupiter.api.BeforeEach;',
+      'import org.junit.jupiter.api.extension.ExtendWith;',
       'import static org.junit.jupiter.api.Assertions.*;',
       'import org.mockito.Mock;',
       'import org.mockito.MockitoAnnotations;',
+      'import org.mockito.junit.jupiter.MockitoExtension;',
+      'import org.mockito.InjectMocks;',
       'import static org.mockito.Mockito.*;',
+      'import static org.assertj.core.api.Assertions.*;',
       'import java.util.*;',
       'import java.util.Arrays;'
     ];
